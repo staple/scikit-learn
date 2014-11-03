@@ -41,6 +41,11 @@ class _BaseScorer(six.with_metaclass(ABCMeta, object)):
     def __call__(self, estimator, X, y, sample_weight=None):
         pass
 
+    @abstractmethod
+    def get_score(self, y, predicted=None, predicted_proba=None,
+                  decision_function=None, sample_weight=None):
+        pass
+
     def __repr__(self):
         kwargs_string = "".join([", %s=%s" % (str(k), str(v))
                                  for k, v in self._kwargs.items()])
@@ -78,13 +83,19 @@ class _PredictScorer(_BaseScorer):
         score : float
             Score function applied to prediction of estimator on X.
         """
-        y_pred = estimator.predict(X)
+        return self._calc_score(estimator.predict(X), y_true, sample_weight)
+
+    def get_score(self, y_true, predicted=None, predicted_proba=None,
+                  decision_function=None, sample_weight=None):
+        return self._calc_score(predicted, y_true, sample_weight)
+
+    def _calc_score(self, predicted, y_true, sample_weight):
         if sample_weight is not None:
-            return self._sign * self._score_func(y_true, y_pred,
+            return self._sign * self._score_func(y_true, predicted,
                                                  sample_weight=sample_weight,
                                                  **self._kwargs)
         else:
-            return self._sign * self._score_func(y_true, y_pred,
+            return self._sign * self._score_func(y_true, predicted,
                                                  **self._kwargs)
 
 
@@ -113,13 +124,20 @@ class _ProbaScorer(_BaseScorer):
         score : float
             Score function applied to prediction of estimator on X.
         """
-        y_pred = clf.predict_proba(X)
+        return self._calc_score(clf.predict_proba(X), y, sample_weight)
+
+    def get_score(self, y, predicted=None, predicted_proba=None,
+                  decision_function=None, sample_weight=None):
+        return self._calc_score(predicted_proba, y, sample_weight)
+
+    def _calc_score(self, predicted_proba, y, sample_weight):
         if sample_weight is not None:
-            return self._sign * self._score_func(y, y_pred,
+            return self._sign * self._score_func(y, predicted_proba,
                                                  sample_weight=sample_weight,
                                                  **self._kwargs)
         else:
-            return self._sign * self._score_func(y, y_pred, **self._kwargs)
+            return self._sign * self._score_func(y, predicted_proba,
+                                                 **self._kwargs)
 
     def _factory_args(self):
         return ", needs_proba=True"
@@ -152,19 +170,34 @@ class _ThresholdScorer(_BaseScorer):
         score : float
             Score function applied to prediction of estimator on X.
         """
+        try:
+            return self._calc_score(y, sample_weight,
+                                    decision_function=clf.decision_function(X))
+        except (NotImplementedError, AttributeError):
+            return self._calc_score(y, sample_weight,
+                                    predicted_proba=clf.predict_proba(X))
+
+    def get_score(self, y, predicted=None, predicted_proba=None,
+                  decision_function=None, sample_weight=None):
+        return self._calc_score(y, sample_weight,
+                                decision_function=decision_function,
+                                predicted_proba=predicted_proba)
+
+    def _calc_score(self, y, sample_weight, decision_function=None,
+                    predicted_proba=None):
         y_type = type_of_target(y)
         if y_type not in ("binary", "multilabel-indicator"):
             raise ValueError("{0} format is not supported".format(y_type))
 
-        try:
-            y_pred = clf.decision_function(X)
+        if decision_function is not None:
+            y_pred = decision_function
 
             # For multi-output multi-class estimator
             if isinstance(y_pred, list):
                 y_pred = np.vstack(p for p in y_pred).T
 
-        except (NotImplementedError, AttributeError):
-            y_pred = clf.predict_proba(X)
+        else:
+            y_pred = predicted_proba
 
             if y_type == "binary":
                 y_pred = y_pred[:, 1]
